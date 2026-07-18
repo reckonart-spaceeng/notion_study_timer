@@ -284,21 +284,21 @@
   }
   .clear-btn:hover { border-color: var(--red); color: var(--red); }
 
-  .exam-date-row {
-    display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  .predict-status {
+    font-size: 0.72rem; color: var(--text-muted); margin-bottom: 10px;
+    font-weight: 500; min-height: 1.1em;
   }
-  .exam-date-row label {
-    font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase;
-    letter-spacing: 0.5px; font-weight: 600;
+  .predict-container { position: relative; height: 340px; }
+  .predict-legend {
+    display: flex; gap: 16px; margin-top: 10px; flex-wrap: wrap;
   }
-  .exam-date-row input[type="date"] {
-    background: var(--bg-secondary); color: var(--text-primary);
-    border: 1px solid var(--border); border-radius: 8px;
-    padding: 6px 10px; font-family: inherit; font-size: 0.75rem;
-    font-weight: 500; cursor: pointer; color-scheme: dark;
+  .predict-legend-item {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 0.65rem; color: var(--text-muted); font-weight: 500;
   }
-  .exam-date-row input[type="date"]:focus { outline: none; border-color: var(--accent); }
-  .predict-container { position: relative; height: 280px; }
+  .predict-legend-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  }
 </style>
 </head>
 <body>
@@ -418,12 +418,10 @@
       <div class="chart-container"><canvas id="radarChart"></canvas></div>
     </div>
     <div class="chart-card full-width">
-      <h3>Projected Hours by Exam Date</h3>
-      <div class="exam-date-row">
-        <label>Exam date</label>
-        <input type="date" id="examDate" />
-      </div>
+      <h3>Exam Readiness Forecast</h3>
+      <div class="predict-status" id="predictStatus">Loading exam data…</div>
       <div class="predict-container"><canvas id="predictChart"></canvas></div>
+      <div class="predict-legend" id="predictLegend"></div>
     </div>
   </div>
 
@@ -520,6 +518,7 @@ async function loadSessionsFromNotion() {
     renderLog();
     renderCharts();
     renderHeatmap();
+    fetchExamData(); // fetch exam dates + progress after sessions are loaded
   } catch (err) {
     console.error('Failed to load from Notion:', err);
     notionConnected = false;
@@ -1092,34 +1091,151 @@ function renderSubjectBalance() {
   });
 }
 
-function renderPredictedFinish() {
-  const examInput = document.getElementById('examDate');
-  if (!examInput.value) {
-    const d = new Date(); d.setDate(d.getDate() + 28);
-    examInput.value = d.toISOString().split('T')[0];
+// ─── EXAM READINESS FORECAST ───
+let examData = null;
+let examDataFetched = false;
+
+async function fetchExamData() {
+  try {
+    const resp = await fetch('/api/exams');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    examData = data.subjects || [];
+    examDataFetched = true;
+    renderPredictedFinish();
+  } catch (e) {
+    console.warn('Exam data not available:', e);
+    examData = null;
+    examDataFetched = true;
+    renderPredictedFinish();
   }
-  const examDate = new Date(examInput.value + 'T23:59:59');
+}
+
+function renderPredictedFinish() {
+  const statusEl = document.getElementById('predictStatus');
+  const container = document.querySelector('.predict-container');
+  const legendEl = document.getElementById('predictLegend');
+
+  // ── Not fetched yet: keep the "Loading…" text ──
+  if (!examDataFetched) {
+    statusEl.textContent = 'Loading exam data…';
+    container.style.display = 'none';
+    legendEl.innerHTML = '';
+    return;
+  }
+
+  // ── Fallback: fetch failed or empty ──
+  if (!examData || examData.length === 0) {
+    if (examData === null) {
+      statusEl.textContent = 'Exam data unavailable — deploy /api/exams.js and share the Exam Countdowns + Main Goals databases with the Study Timer integration.';
+    } else {
+      statusEl.textContent = 'No exams found in the Exam Countdowns database.';
+    }
+    container.style.display = 'none';
+    legendEl.innerHTML = '';
+    return;
+  }
+  container.style.display = 'block';
+
   const now = new Date();
-  const weeksLeft = Math.max(0, (examDate - now) / (7 * 24 * 60 * 60 * 1000));
 
-  // Average weekly rate per subject (last 4 weeks)
-  const fourWeeksAgo = new Date(now); fourWeeksAgo.setDate(now.getDate() - 28);
+  // Filter to upcoming exams & sort by date (nearest first)
+  const upcoming = examData
+    .filter(s => s.examDate && new Date(s.examDate + 'T23:59:59') > now)
+    .sort((a, b) => new Date(a.examDate) - new Date(b.examDate));
+
+  if (upcoming.length === 0) {
+    statusEl.textContent = 'All exams have passed — no upcoming exams to forecast.';
+    container.style.display = 'none';
+    legendEl.innerHTML = '';
+    return;
+  }
+
+  // ── Build per-subject study data from Pomodoro sessions ──
+  const totalHoursMap = {};
+  const fourWeeksAgo = new Date(now);
+  fourWeeksAgo.setDate(now.getDate() - 28);
   const fourWeeksStr = fourWeeksAgo.toISOString().split('T')[0];
-  const recentMap = {}, totalMap = {};
+  const recentHoursMap = {};
+
   sessions.forEach(s => {
-    totalMap[s.subject] = (totalMap[s.subject] || 0) + s.durationMin;
-    if (s.date >= fourWeeksStr) recentMap[s.subject] = (recentMap[s.subject] || 0) + s.durationMin;
+    totalHoursMap[s.subject] = (totalHoursMap[s.subject] || 0) + s.durationMin / 60;
+    if (s.date >= fourWeeksStr) {
+      recentHoursMap[s.subject] = (recentHoursMap[s.subject] || 0) + s.durationMin / 60;
+    }
   });
 
-  const topSubjects = Object.entries(totalMap).sort((a,b) => b[1] - a[1]).slice(0, 10);
-  if (topSubjects.length === 0) return;
+  // ── Calculate predictions ──
+  const rows = upcoming.map(subj => {
+    const code = subj.code;
+    const examDate = new Date(subj.examDate + 'T23:59:59');
+    const daysLeft = Math.max(0, Math.ceil((examDate - now) / (1000 * 60 * 60 * 24)));
+    const weeksLeft = daysLeft / 7;
+    const progress = subj.progress != null ? subj.progress : 0;
+    const remaining = Math.max(0, 100 - progress);
 
-  const labels = topSubjects.map(([n]) => n);
-  const currentHours = topSubjects.map(([,v]) => +(v / 60).toFixed(1));
-  const projectedAdd = topSubjects.map(([n]) => {
-    const weeklyRate = (recentMap[n] || 0) / 4;
-    return +((weeklyRate * weeksLeft) / 60).toFixed(1);
+    // Study velocity: hours/week over last 4 weeks
+    const totalH = totalHoursMap[code] || 0;
+    const recentH = recentHoursMap[code] || 0;
+    const weeklyRate = recentH / 4; // hours/week
+
+    // Progress rate: how much progress per hour of study
+    // If no study data or no progress, we can't predict
+    let projectedProgress = 0;
+    let predictedPct = progress;
+    let status = 'unknown';
+
+    if (totalH > 0 && progress > 0) {
+      const progressPerHour = progress / totalH;
+      const projectedAdditionalHours = weeklyRate * weeksLeft;
+      projectedProgress = Math.min(remaining, projectedAdditionalHours * progressPerHour);
+      predictedPct = progress + projectedProgress;
+
+      if (predictedPct >= 90) status = 'on-track';
+      else if (predictedPct >= 65) status = 'at-risk';
+      else status = 'behind';
+    } else if (progress > 0) {
+      // Has progress but no tracked study → can't predict rate
+      status = 'no-data';
+    } else {
+      status = 'not-started';
+    }
+
+    return {
+      code, daysLeft, progress, projectedProgress, predictedPct,
+      status, weeklyRate, totalH, examDate: subj.examDate,
+      difficulty: subj.difficulty, target: subj.target,
+    };
   });
+
+  // ── Adjust chart height dynamically ──
+  const rowHeight = 32;
+  const chartH = Math.max(200, rows.length * rowHeight + 60);
+  container.style.height = chartH + 'px';
+
+  // ── Status summary ──
+  const onTrack = rows.filter(r => r.status === 'on-track').length;
+  const atRisk = rows.filter(r => r.status === 'at-risk').length;
+  const behind = rows.filter(r => r.status === 'behind').length;
+  statusEl.textContent = `${rows.length} upcoming exams · ${onTrack} on track · ${atRisk} at risk · ${behind} behind`;
+
+  // ── Status colors ──
+  function statusColor(st) {
+    if (st === 'on-track') return '#4ec4b2';
+    if (st === 'at-risk') return '#e4be58';
+    if (st === 'behind') return '#e08888';
+    return '#5c657a';
+  }
+
+  // ── Labels with days left ──
+  const labels = rows.map(r => `${r.code}  (${r.daysLeft}d)`);
+
+  // ── Chart data ──
+  const currentData = rows.map(r => r.progress);
+  const projectedData = rows.map(r => r.projectedProgress);
+  const bgColors = rows.map(r => hexToRgba(getColor(r.code), 0.8));
+  const projBgColors = rows.map(r => hexToRgba(statusColor(r.status), 0.25));
+  const projBorderColors = rows.map(r => hexToRgba(statusColor(r.status), 0.5));
 
   if (predictChart) predictChart.destroy();
   predictChart = new Chart(document.getElementById('predictChart'), {
@@ -1128,18 +1244,18 @@ function renderPredictedFinish() {
       labels,
       datasets: [
         {
-          label: 'Current',
-          data: currentHours,
-          backgroundColor: topSubjects.map(([n]) => getColor(n)),
-          borderWidth: 0, borderRadius: 3,
+          label: 'Current Progress',
+          data: currentData,
+          backgroundColor: bgColors,
+          borderWidth: 0, borderRadius: 3, barPercentage: 0.7,
         },
         {
-          label: 'Projected',
-          data: projectedAdd,
-          backgroundColor: topSubjects.map(([n]) => hexToRgba(getColor(n), 0.3)),
+          label: 'Projected by Exam',
+          data: projectedData,
+          backgroundColor: projBgColors,
           borderWidth: 1,
-          borderColor: topSubjects.map(([n]) => hexToRgba(getColor(n), 0.5)),
-          borderRadius: 3,
+          borderColor: projBorderColors,
+          borderRadius: 3, barPercentage: 0.7,
         }
       ]
     },
@@ -1147,19 +1263,76 @@ function renderPredictedFinish() {
       responsive: true, maintainAspectRatio: false,
       indexAxis: 'y',
       plugins: {
-        legend: { labels: { color: '#8a93a8', font: { family: "'Plus Jakarta Sans'", size: 11, weight: 600 }, boxWidth: 12, padding: 8 } },
-        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.raw}h` } }
+        legend: {
+          labels: {
+            color: '#8a93a8',
+            font: { family: "'Plus Jakarta Sans'", size: 11, weight: 600 },
+            boxWidth: 12, padding: 8,
+          }
+        },
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              const idx = items[0].dataIndex;
+              const r = rows[idx];
+              return `${r.code} — exam ${r.examDate} (${r.daysLeft} days left)`;
+            },
+            afterTitle: (items) => {
+              const r = rows[items[0].dataIndex];
+              const parts = [];
+              if (r.difficulty) parts.push('Difficulty: ' + r.difficulty);
+              if (r.target) parts.push('Target: ' + r.target);
+              if (r.totalH > 0) parts.push('Study logged: ' + r.totalH.toFixed(1) + 'h');
+              if (r.weeklyRate > 0) parts.push('Recent pace: ' + r.weeklyRate.toFixed(1) + 'h/wk');
+              return parts.join('\n');
+            },
+            label: (ctx) => {
+              const r = rows[ctx.dataIndex];
+              if (ctx.datasetIndex === 0) return `Progress: ${r.progress}%`;
+              if (r.status === 'unknown' || r.status === 'no-data' || r.status === 'not-started')
+                return 'Projected: insufficient data';
+              return `Projected total: ${Math.round(r.predictedPct)}%`;
+            }
+          }
+        }
       },
       scales: {
-        x: { stacked: true, ticks: { color: '#5c657a', font: { family: "'Plus Jakarta Sans'", size: 10, weight: 500 }, callback: v => v + 'h' }, grid: { color: 'rgba(44,51,68,0.5)' }, beginAtZero: true },
-        y: { stacked: true, ticks: { color: '#8a93a8', font: { family: "'Plus Jakarta Sans'", size: 11, weight: 600 } }, grid: { display: false } }
+        x: {
+          stacked: true,
+          min: 0, max: 100,
+          ticks: {
+            color: '#5c657a',
+            font: { family: "'Plus Jakarta Sans'", size: 10, weight: 500 },
+            callback: v => v + '%',
+          },
+          grid: { color: 'rgba(44,51,68,0.5)' },
+        },
+        y: {
+          stacked: true,
+          ticks: {
+            color: (ctx) => {
+              const r = rows[ctx.index];
+              if (!r) return '#8a93a8';
+              return statusColor(r.status);
+            },
+            font: { family: "'Plus Jakarta Sans'", size: 11, weight: 600 },
+          },
+          grid: { display: false },
+        }
       }
     }
   });
-}
 
-// Re-render prediction when exam date changes
-document.getElementById('examDate').addEventListener('change', renderPredictedFinish);
+  // ── Legend ──
+  legendEl.innerHTML = [
+    { color: '#4ec4b2', label: 'On track (≥90%)' },
+    { color: '#e4be58', label: 'At risk (65–89%)' },
+    { color: '#e08888', label: 'Behind (<65%)' },
+    { color: '#5c657a', label: 'Insufficient data' },
+  ].map(l =>
+    `<span class="predict-legend-item"><span class="predict-legend-dot" style="background:${l.color}"></span>${l.label}</span>`
+  ).join('');
+}
 
 // Wrap renderCharts so new charts also update (without modifying the original function)
 const _origRenderCharts = renderCharts;
