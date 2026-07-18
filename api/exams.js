@@ -2,8 +2,8 @@ const { Client } = require("@notionhq/client");
 
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
 
-// Exam Countdowns page contains an inline database with per-subject exam dates
-const EXAM_PAGE_ID = "373dccae-e107-811c-b400-f2e60c7f47c7";
+// "Exam Dates" database inside the Exam Countdowns page
+const EXAM_DB_ID = "62d83478-7622-43b6-9a46-0d0b7731f1e2";
 // Main Goals database holds subject pages with progress rollups
 const MAIN_GOALS_DB_ID = "1f2dccae-e107-81be-a252-000bbfa8e542";
 
@@ -19,21 +19,9 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    // ── 1. Find the inline Exam Countdown database ──
-    const blocks = await notion.blocks.children.list({
-      block_id: EXAM_PAGE_ID,
-      page_size: 100,
-    });
-    const childDb = blocks.results.find(
-      (b) => b.type === "child_database"
-    );
-    if (!childDb) {
-      return res.status(404).json({ error: "Exam countdown database not found inside page" });
-    }
-
-    // ── 2. Query exam entries ──
+    // ── 1. Query exam entries ──
     const examResponse = await notion.databases.query({
-      database_id: childDb.id,
+      database_id: EXAM_DB_ID,
       page_size: 100,
     });
     const exams = examResponse.results
@@ -49,7 +37,7 @@ module.exports = async function handler(req, res) {
       })
       .filter((e) => e.code && e.date);
 
-    // ── 3. Query Main Goals for progress data ──
+    // ── 2. Query Main Goals for progress data ──
     const goalResponse = await notion.databases.query({
       database_id: MAIN_GOALS_DB_ID,
       filter: {
@@ -102,7 +90,7 @@ module.exports = async function handler(req, res) {
       };
     });
 
-    // ── 4. Match exams ↔ goals by name (fuzzy) ──
+    // ── 3. Match exams ↔ goals by name (fuzzy) ──
     const subjects = exams.map((exam) => {
       // Try exact match first, then substring containment
       const examLower = exam.name.toLowerCase();
