@@ -5,7 +5,7 @@ const notion = new Client({ auth: process.env.NOTION_API_KEY });
 // "Exam Dates" database inside the Exam Countdowns page
 const EXAM_DB_ID = "62d83478-7622-43b6-9a46-0d0b7731f1e2";
 // Main Goals database holds subject pages with progress rollups
-const MAIN_GOALS_DB_ID = "1f2dccae-e107-81be-a252-000bbfa8e542";
+const MAIN_GOALS_DB_ID = "1f2dccae-e107-81eb-9ca2-dcd8531ffb47";
 
 module.exports = async function handler(req, res) {
   // CORS
