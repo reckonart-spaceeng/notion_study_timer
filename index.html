@@ -1127,7 +1127,7 @@ function renderPredictedFinish() {
   // ── Fallback: fetch failed or empty ──
   if (!examData || examData.length === 0) {
     if (examData === null) {
-      statusEl.textContent = 'Exam data unavailable — deploy /api/exams.js and share the Exam Countdowns + Main Goals databases with the Study Timer integration.';
+      statusEl.textContent = 'Exam data unavailable — deploy /api/exams.js and share databases with the Study Timer integration.';
     } else {
       statusEl.textContent = 'No exams found in the Exam Countdowns database.';
     }
@@ -1165,78 +1165,73 @@ function renderPredictedFinish() {
     }
   });
 
+  // ── Check if any subject has real progress data from Notion ──
+  const hasProgressData = upcoming.some(s => s.progress != null && s.progress > 0);
+
   // ── Calculate predictions ──
   const rows = upcoming.map(subj => {
     const code = subj.code;
     const examDate = new Date(subj.examDate + 'T23:59:59');
     const daysLeft = Math.max(0, Math.ceil((examDate - now) / (1000 * 60 * 60 * 24)));
     const weeksLeft = daysLeft / 7;
-    const progress = subj.progress != null ? subj.progress : 0;
-    const remaining = Math.max(0, 100 - progress);
 
-    // Study velocity: hours/week over last 4 weeks
     const totalH = totalHoursMap[code] || 0;
     const recentH = recentHoursMap[code] || 0;
-    const weeklyRate = recentH / 4; // hours/week
+    const weeklyRate = recentH / 4;
+    const projectedAddH = +(weeklyRate * weeksLeft).toFixed(1);
 
-    // Progress rate: how much progress per hour of study
-    // If no study data or no progress, we can't predict
-    let projectedProgress = 0;
-    let predictedPct = progress;
-    let status = 'unknown';
+    // Status based on study activity relative to exam proximity
+    let status = 'none';
+    if (recentH > 0) status = 'active';         // studied recently
+    else if (totalH > 0) status = 'stale';       // studied before but not recently
+    else if (daysLeft <= 14) status = 'urgent';   // no study, exam soon
+    // else status = 'none' — no study, exam far away
 
-    if (totalH > 0 && progress > 0) {
+    // If Notion progress is available, use it for richer prediction
+    const progress = subj.progress != null ? subj.progress : null;
+    let predictedPct = null;
+    if (hasProgressData && progress != null && totalH > 0) {
       const progressPerHour = progress / totalH;
-      const projectedAdditionalHours = weeklyRate * weeksLeft;
-      projectedProgress = Math.min(remaining, projectedAdditionalHours * progressPerHour);
-      predictedPct = progress + projectedProgress;
-
+      predictedPct = Math.min(100, progress + projectedAddH * progressPerHour);
       if (predictedPct >= 90) status = 'on-track';
       else if (predictedPct >= 65) status = 'at-risk';
       else status = 'behind';
-    } else if (progress > 0) {
-      // Has progress but no tracked study → can't predict rate
-      status = 'no-data';
-    } else {
-      status = 'not-started';
     }
 
     return {
-      code, daysLeft, progress, projectedProgress, predictedPct,
-      status, weeklyRate, totalH, examDate: subj.examDate,
+      code, daysLeft, totalH: +totalH.toFixed(1), projectedAddH,
+      weeklyRate, status, examDate: subj.examDate,
       difficulty: subj.difficulty, target: subj.target,
+      progress, predictedPct,
     };
   });
 
   // ── Adjust chart height dynamically ──
   const rowHeight = 32;
-  const chartH = Math.max(200, rows.length * rowHeight + 60);
+  const chartH = Math.max(220, rows.length * rowHeight + 60);
   container.style.height = chartH + 'px';
-
-  // ── Status summary ──
-  const onTrack = rows.filter(r => r.status === 'on-track').length;
-  const atRisk = rows.filter(r => r.status === 'at-risk').length;
-  const behind = rows.filter(r => r.status === 'behind').length;
-  statusEl.textContent = `${rows.length} upcoming exams · ${onTrack} on track · ${atRisk} at risk · ${behind} behind`;
 
   // ── Status colors ──
   function statusColor(st) {
     if (st === 'on-track') return '#4ec4b2';
+    if (st === 'active') return '#4ec4b2';
     if (st === 'at-risk') return '#e4be58';
+    if (st === 'stale') return '#e4be58';
     if (st === 'behind') return '#e08888';
+    if (st === 'urgent') return '#e08888';
     return '#5c657a';
   }
 
-  // ── Labels with days left ──
+  // ── Status summary ──
+  const active = rows.filter(r => r.status === 'active' || r.status === 'on-track').length;
+  const needsAttn = rows.filter(r => r.status === 'stale' || r.status === 'at-risk').length;
+  const urgent = rows.filter(r => r.status === 'urgent' || r.status === 'behind' || r.status === 'none').length;
+  statusEl.textContent = `${rows.length} upcoming exams · ${active} active · ${needsAttn} needs attention · ${urgent} not started`;
+
+  // ── Labels: code + days left ──
   const labels = rows.map(r => `${r.code}  (${r.daysLeft}d)`);
 
-  // ── Chart data ──
-  const currentData = rows.map(r => r.progress);
-  const projectedData = rows.map(r => r.projectedProgress);
-  const bgColors = rows.map(r => hexToRgba(getColor(r.code), 0.8));
-  const projBgColors = rows.map(r => hexToRgba(statusColor(r.status), 0.25));
-  const projBorderColors = rows.map(r => hexToRgba(statusColor(r.status), 0.5));
-
+  // ── Chart: study hours invested + projected ──
   if (predictChart) predictChart.destroy();
   predictChart = new Chart(document.getElementById('predictChart'), {
     type: 'bar',
@@ -1244,17 +1239,17 @@ function renderPredictedFinish() {
       labels,
       datasets: [
         {
-          label: 'Current Progress',
-          data: currentData,
-          backgroundColor: bgColors,
+          label: 'Hours Studied',
+          data: rows.map(r => r.totalH),
+          backgroundColor: rows.map(r => hexToRgba(getColor(r.code), 0.8)),
           borderWidth: 0, borderRadius: 3, barPercentage: 0.7,
         },
         {
           label: 'Projected by Exam',
-          data: projectedData,
-          backgroundColor: projBgColors,
+          data: rows.map(r => r.projectedAddH),
+          backgroundColor: rows.map(r => hexToRgba(statusColor(r.status), 0.22)),
           borderWidth: 1,
-          borderColor: projBorderColors,
+          borderColor: rows.map(r => hexToRgba(statusColor(r.status), 0.5)),
           borderRadius: 3, barPercentage: 0.7,
         }
       ]
@@ -1273,8 +1268,7 @@ function renderPredictedFinish() {
         tooltip: {
           callbacks: {
             title: (items) => {
-              const idx = items[0].dataIndex;
-              const r = rows[idx];
+              const r = rows[items[0].dataIndex];
               return `${r.code} — exam ${r.examDate} (${r.daysLeft} days left)`;
             },
             afterTitle: (items) => {
@@ -1282,16 +1276,14 @@ function renderPredictedFinish() {
               const parts = [];
               if (r.difficulty) parts.push('Difficulty: ' + r.difficulty);
               if (r.target) parts.push('Target: ' + r.target);
-              if (r.totalH > 0) parts.push('Study logged: ' + r.totalH.toFixed(1) + 'h');
               if (r.weeklyRate > 0) parts.push('Recent pace: ' + r.weeklyRate.toFixed(1) + 'h/wk');
+              if (r.progress != null) parts.push('Notion progress: ' + r.progress + '%');
               return parts.join('\n');
             },
             label: (ctx) => {
               const r = rows[ctx.dataIndex];
-              if (ctx.datasetIndex === 0) return `Progress: ${r.progress}%`;
-              if (r.status === 'unknown' || r.status === 'no-data' || r.status === 'not-started')
-                return 'Projected: insufficient data';
-              return `Projected total: ${Math.round(r.predictedPct)}%`;
+              if (ctx.datasetIndex === 0) return `Studied: ${r.totalH}h`;
+              return `Projected additional: +${r.projectedAddH}h (total ${+(r.totalH + r.projectedAddH).toFixed(1)}h)`;
             }
           }
         }
@@ -1299,11 +1291,11 @@ function renderPredictedFinish() {
       scales: {
         x: {
           stacked: true,
-          min: 0, max: 100,
+          beginAtZero: true,
           ticks: {
             color: '#5c657a',
             font: { family: "'Plus Jakarta Sans'", size: 10, weight: 500 },
-            callback: v => v + '%',
+            callback: v => v + 'h',
           },
           grid: { color: 'rgba(44,51,68,0.5)' },
         },
@@ -1325,10 +1317,10 @@ function renderPredictedFinish() {
 
   // ── Legend ──
   legendEl.innerHTML = [
-    { color: '#4ec4b2', label: 'On track (≥90%)' },
-    { color: '#e4be58', label: 'At risk (65–89%)' },
-    { color: '#e08888', label: 'Behind (<65%)' },
-    { color: '#5c657a', label: 'Insufficient data' },
+    { color: '#4ec4b2', label: 'Active (studied recently)' },
+    { color: '#e4be58', label: 'Needs attention (no recent study)' },
+    { color: '#e08888', label: 'Urgent (no study, exam soon)' },
+    { color: '#5c657a', label: 'Not started' },
   ].map(l =>
     `<span class="predict-legend-item"><span class="predict-legend-dot" style="background:${l.color}"></span>${l.label}</span>`
   ).join('');
