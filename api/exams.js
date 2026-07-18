@@ -50,16 +50,30 @@ module.exports = async function handler(req, res) {
     const goals = goalResponse.results.map((page) => {
       const props = page.properties;
 
-      // Extract progress from rollups / formula
+      // Extract progress — try Progress Bar formula first
       let progress = null;
 
-      // "To Do's" rollup with percent_per_group aggregation → number 0–100
-      const todosPct = props["To Do's"]?.rollup;
-      if (todosPct?.type === "number" && todosPct.number != null) {
-        progress = Math.round(todosPct.number);
+      // 1. "Progress Bar" formula → may return number or string
+      const pbar = props["Progress Bar"]?.formula;
+      if (pbar) {
+        if (pbar.type === "number" && pbar.number != null) {
+          progress = Math.round(pbar.number * (pbar.number <= 1 ? 100 : 1));
+        } else if (pbar.type === "string" && pbar.string) {
+          // Parse percentage from strings like "██████░░░░ 47%" or "47%"
+          const m = pbar.string.match(/(\d+(?:\.\d+)?)\s*%/);
+          if (m) progress = Math.round(parseFloat(m[1]));
+        }
       }
 
-      // Fallback: Done / Total
+      // 2. Fallback: "To Do's" rollup (percent_per_group)
+      if (progress === null) {
+        const todosPct = props["To Do's"]?.rollup;
+        if (todosPct?.type === "number" && todosPct.number != null) {
+          progress = Math.round(todosPct.number);
+        }
+      }
+
+      // 3. Fallback: Done / Total rollups
       if (progress === null) {
         const done = props["Done To-Do's"]?.rollup;
         const total = props["Total To-Do's"]?.rollup;
@@ -72,21 +86,11 @@ module.exports = async function handler(req, res) {
         }
       }
 
-      // Counts for display
-      const doneTodos =
-        props["Done To-Do's"]?.rollup?.type === "number"
-          ? props["Done To-Do's"].rollup.number
-          : null;
-      const totalTodos =
-        props["Total To-Do's"]?.rollup?.type === "number"
-          ? props["Total To-Do's"].rollup.number
-          : null;
-
       return {
         name: (props["Name"]?.title?.[0]?.plain_text || "").trim(),
         progress,
-        doneTodos,
-        totalTodos,
+        // Include raw formula value for debugging
+        progressBarRaw: pbar || null,
       };
     });
 
@@ -109,8 +113,7 @@ module.exports = async function handler(req, res) {
         difficulty: exam.difficulty,
         target: exam.target,
         progress: goal?.progress ?? null,
-        doneTodos: goal?.doneTodos ?? null,
-        totalTodos: goal?.totalTodos ?? null,
+        progressBarRaw: goal?.progressBarRaw ?? null,
       };
     });
 
